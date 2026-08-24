@@ -1,0 +1,16 @@
+# Image Convert - pinned runtime and build dependencies.
+#
+# PySide6-Essentials rather than the full PySide6: this program uses only
+# QtCore, QtGui and QtWidgets, and Essentials is a fraction of the download.
+#
+# Install into the project venv, not the system interpreter:
+#   py -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+PySide6-Essentials==6.11.1
+Pillow>=12.0
+pillow-heif>=1.5.0
+
+# Build and test only.
+pyinstaller>=6.22
+pytest>=8.0
