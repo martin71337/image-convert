@@ -66,6 +66,38 @@ than the quality is worth, and the encoder falls back to subsampled chroma.
 
 _maxblock_lock = threading.Lock()
 
+_publish_lock = threading.Lock()
+"""Serialises the final rename of every output, across all worker threads.
+
+**A real corruption, diagnosed from the cloud client's own audit log.** The
+owner converted nine photographs into a job folder on a virtual cloud drive
+(``P:``, served by a sync client that projects a filesystem). Eight of the nine
+finished within 147 milliseconds of each other - the natural behaviour of a
+pool of eight workers on similar-sized files - and two of them, IMG_3009 and
+IMG_3010, were renamed in the SAME MILLISECOND. Thirty-seven milliseconds later
+the client logged:
+
+    [Update]mismatch temp file attr: .../IMG_3009.jpg, 4460100,0
+
+It had lost the size of the renamed file and recorded zero, then uploaded on
+that basis. The bytes on local disk were, and remain, perfect - hash-identical
+to a copy converted elsewhere - but the object in the cloud was unreadable. The
+ninth file, renamed five seconds later on its own, was untouched. That line is
+the ONLY such mismatch in 1.7 million rows of that client's audit history, so
+nothing else on the machine had ever driven it hard enough to expose the race.
+
+The defect is in the sync client's metadata tracking, not here: this program
+wrote correct bytes and a local filesystem stores them correctly. But this
+program is what provoked it, so this program is what avoids it. Renaming is
+microseconds of work against the seconds each decode and encode take, so
+serialising it costs nothing measurable and removes the burst of concurrent
+renames entirely. Parallelism stays where the time actually goes.
+
+Deliberately NOT solved by writing straight to the final name: staging and
+renaming is what stops a half-written JPEG ever existing under a name something
+else might read.
+"""
+
 
 BROKEN_STREAM = "broken data stream"
 """The text of the error Pillow raises when the encoder buffer is too small.
@@ -298,7 +330,9 @@ def convert_image(
                 notes.append(note)
                 notes.extend(_encode_resiliently(adapted, staged, target, arguments, reduced))
 
-            os.replace(staged, destination)
+            # One rename at a time, process-wide. See _publish_lock.
+            with _publish_lock:
+                os.replace(staged, destination)
         except BaseException:
             # Includes the cancel path: a partial file must never be left behind
             # looking like output.

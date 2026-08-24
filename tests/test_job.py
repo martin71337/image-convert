@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -225,3 +226,72 @@ class TestCollectImages:
 
     def test_a_missing_folder_is_ignored_not_fatal(self, tmp_path: Path):
         assert job.collect_images([tmp_path / "nope"]) == []
+
+
+class TestPublishIsSerialised:
+    """Renames must never overlap, whatever the worker count.
+
+    Diagnosed from a real corruption on the owner's cloud drive: eight outputs
+    were renamed within 147 ms, two of them in the same millisecond, and the
+    sync client lost one file's size, recorded zero, and uploaded an unreadable
+    object. Local bytes were perfect throughout. The client's audit log carried
+    exactly one such mismatch in 1.7 million rows - this program's burst was the
+    only thing that had ever exposed it.
+    """
+
+    def test_no_two_renames_overlap_under_a_parallel_batch(
+        self, make_image, quadrants, tmp_path, monkeypatch
+    ):
+        import os as os_module
+
+        from imgconv.imaging import backend
+
+        overlaps = []
+        active = 0
+        watcher = threading.Lock()
+        real_replace = os_module.replace
+
+        def observed_replace(src, dst):
+            nonlocal active
+            with watcher:
+                active += 1
+                if active > 1:
+                    overlaps.append((src, dst))
+            try:
+                # Wide enough that genuinely concurrent renames are certain to
+                # be caught, not merely likely.
+                time.sleep(0.02)
+                return real_replace(src, dst)
+            finally:
+                with watcher:
+                    active -= 1
+
+        monkeypatch.setattr(backend.os, "replace", observed_replace)
+
+        sources = [make_image(f"IMG_{n}.heic", "HEIF", quadrants) for n in range(12)]
+        report = job.run(sources, make_options(tmp_path), max_workers=8)
+
+        assert len(report.converted) == 12, report.summary()
+        assert overlaps == [], f"{len(overlaps)} renames overlapped: {overlaps[:3]}"
+
+    def test_serialising_does_not_serialise_the_conversion_itself(
+        self, make_image, quadrants, tmp_path
+    ):
+        """The lock must cover the rename only.
+
+        If it were held across the encode, the whole batch would run single
+        file at a time and the parallelism would be gone - a fix that quietly
+        costs what it was meant to protect.
+        """
+        import inspect
+
+        from imgconv.imaging import backend
+
+        body = inspect.getsource(backend.convert_image)
+        publish = body.index("_publish_lock")
+        replace = body.index("os.replace", publish)
+        # Nothing but the rename may sit inside the lock's block.
+        between = body[publish:replace]
+        assert between.count("\n") <= 2, (
+            f"the publish lock appears to cover more than the rename:\n{between}"
+        )
