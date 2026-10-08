@@ -5,3 +5,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.partial
+
+# Job photos and other images dropped into the project for testing.
+# Never committed: an iPhone HEIC carries the GPS coordinates of where it
+# was taken, and this repository is public.
+Pictures*/
+*.HEIC
+*.heic
