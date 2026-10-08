@@ -145,7 +145,14 @@ def gate_checksum() -> Path:
     announce("6/6", "writing the checksum")
     digest = hashlib.sha256(EXECUTABLE.read_bytes()).hexdigest()
     checksum_file = EXECUTABLE.with_suffix(".exe.sha256")
-    checksum_file.write_text(f"{digest} *{EXECUTABLE.name}\n", encoding="utf-8")
+
+    # newline="\n" is load-bearing, not tidiness. Python's text mode translates
+    # "\n" to "\r\n" on Windows, and `sha256sum -c` then looks for a file whose
+    # name ends in a carriage return and reports it missing - so the one file
+    # whose entire purpose is to be fed to a checksum tool fails against every
+    # such tool. Caught by downloading a published release and verifying it.
+    with open(checksum_file, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"{digest} *{EXECUTABLE.name}\n")
     print(f"       {digest}")
     return checksum_file
 

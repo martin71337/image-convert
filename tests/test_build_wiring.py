@@ -197,3 +197,71 @@ class TestTheBuildScript:
     def test_the_product_is_named_correctly(self):
         assert APP_NAME == "Image Convert"
         assert APP_PUBLISHER == "DMARTIN"
+
+
+class TestThePublishedChecksum:
+    r"""The checksum file has to work with the tool it exists for.
+
+    Found by downloading a published release and verifying it: Python's text
+    mode translates ``\n`` to ``\r\n`` on Windows, so the file named a target
+    ending in a carriage return and ``sha256sum -c`` reported it missing. The
+    digest was correct the whole time; the file was simply unusable by the one
+    class of tool anybody would check it with.
+    """
+
+    def test_the_build_writes_the_checksum_with_unix_line_endings(self, tmp_path, capsys):
+        """Runs the real gate against a stand-in executable.
+
+        An earlier version of this test grepped the source for ``newline=``.
+        It passed against a deliberately broken build script, because the
+        string it matched was the COMMENT explaining why the argument is
+        needed, not the argument. Grepping for the presence of a word is not a
+        test of behaviour; calling the function and reading the bytes it wrote
+        is.
+        """
+        import hashlib
+
+        from tools import build_exe
+
+        stand_in = tmp_path / "ImageConvert.exe"
+        stand_in.write_bytes(b"not really an executable")
+
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(build_exe, "EXECUTABLE", stand_in)
+        try:
+            written = build_exe.gate_checksum()
+        finally:
+            monkey.undo()
+        capsys.readouterr()
+
+        raw = written.read_bytes()
+        assert b"\r" not in raw, (
+            "a carriage return makes the filename unmatchable and "
+            "`sha256sum -c` reports the file missing"
+        )
+        expected = hashlib.sha256(stand_in.read_bytes()).hexdigest()
+        assert raw == f"{expected} *ImageConvert.exe\n".encode()
+
+    def test_the_built_checksum_file_has_no_carriage_return(self):
+        """Checks the real artifact, when a build is present to check."""
+        checksum = REPO_ROOT / "dist" / "ImageConvert.exe.sha256"
+        if not checksum.is_file():
+            pytest.skip("no build in dist/")
+        assert b"\r" not in checksum.read_bytes()
+
+    def test_a_checksum_line_round_trips(self, tmp_path: Path):
+        """The format itself: digest, space, asterisk, bare filename, LF."""
+        import hashlib
+        import re
+
+        payload = tmp_path / "thing.bin"
+        payload.write_bytes(b"some bytes")
+        digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+
+        checksum = tmp_path / "thing.bin.sha256"
+        with open(checksum, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"{digest} *{payload.name}\n")
+
+        raw = checksum.read_bytes()
+        assert b"\r" not in raw, "a carriage return makes the filename unmatchable"
+        assert re.fullmatch(rb"[0-9a-f]{64} \*thing\.bin\n", raw), raw
